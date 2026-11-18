@@ -44,7 +44,9 @@ def parse_args():
     p.add_argument('--no-fp16', action='store_true')
     p.add_argument('--print-interval', type=int, default=50, help='log every N iterations')
     p.add_argument('--name', default='', help='experiment name (default: yolox_s_face_<dataset>)')
-    p.add_argument('--output-dir', default=str(ROOT / 'YOLOX_outputs'))
+    # Empty = <repo>/YOLOX_outputs, resolved where the training actually runs (an absolute
+    # default would be recorded on the submitting machine and reused on the GPU node).
+    p.add_argument('--output-dir', default='')
     p.add_argument('--limit-train', type=int, default=0, help='debug: use only N training images per dataset')
     p.add_argument('--limit-eval', type=int, default=0, help='debug: use only N images per eval set')
     p.add_argument('--no-clearml', action='store_true')
@@ -110,6 +112,7 @@ def main():
     if args.dataset not in DATASETS:
         raise SystemExit(f'--dataset must be one of {list(DATASETS)} (got {args.dataset!r})')
     name = args.name or f'yolox_s_face_{args.dataset}'
+    args.output_dir = args.output_dir or str(ROOT / 'YOLOX_outputs')
     # ---- everything below runs on the machine that actually trains ----
     import torch
     from yolox.core import launch
