@@ -31,7 +31,9 @@ PACKAGES = ['clearml', 'boto3', 'numpy<2', 'opencv-python-headless', 'loguru', '
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--dataset', choices=list(DATASETS), required=True)
+    # Not argparse-"required": on a ClearML agent the script starts with an empty command
+    # line and the values arrive through task.connect() in main().
+    p.add_argument('--dataset', choices=list(DATASETS), default='')
     p.add_argument('--data-root', default='', help='local folder holding kaggle/ and soloface/; '
                    'empty = fetch ClearML Datasets')
     p.add_argument('--epochs', type=int, default=50)
@@ -91,16 +93,23 @@ def run_training(exp, trainer_args):
 
 def main():
     args = parse_args()
-    name = args.name or f'yolox_s_face_{args.dataset}'
 
     task = None
     if not args.no_clearml:
         from clearml import Task
-        task = Task.init(project_name=args.project, task_name=name)
+        task = Task.init(project_name=args.project,
+                         task_name=args.name or f'yolox_s_face_{args.dataset}',
+                         auto_connect_arg_parser=False)
+        # Explicit two-way binding: stored on submit, and on the agent the stored values
+        # replace the (empty-command-line) defaults.
+        args = argparse.Namespace(**task.connect(vars(args), name='Args'))
         task.set_base_docker(docker_image=DOCKER_IMAGE, docker_arguments='--shm-size=8g')
         task.set_packages(PACKAGES)
         if args.queue:
             task.execute_remotely(queue_name=args.queue)   # local process ends here
+    if args.dataset not in DATASETS:
+        raise SystemExit(f'--dataset must be one of {list(DATASETS)} (got {args.dataset!r})')
+    name = args.name or f'yolox_s_face_{args.dataset}'
     # ---- everything below runs on the machine that actually trains ----
     import torch
     from yolox.core import launch
