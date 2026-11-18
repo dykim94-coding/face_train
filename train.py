@@ -19,7 +19,8 @@ DATASETS = {                      # --dataset choice -> names used on disk / in 
     'soloface': ['soloface'],
     'both': ['kaggle', 'soloface'],
 }
-CLEARML_DATASET_NAME = {'kaggle': 'kaggle_face', 'soloface': 'soloface'}
+PROJECT = 'FD-FS (Face - object detection, feasibility study)'   # same in tools/upload_dataset.py
+CLEARML_DATASET_NAME ={'kaggle': 'kaggle_face', 'soloface': 'soloface'}
 TRAIN_VAL_SPLIT = {'kaggle': 'val', 'soloface': 'val'}          # used during training
 BENCHMARKS = {'kaggle_val': ('kaggle', 'val'), 'soloface_test': ('soloface', 'test')}
 COCO_YOLOX_S = 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth'
@@ -45,7 +46,7 @@ def parse_args():
     p.add_argument('--limit-train', type=int, default=0, help='debug: use only N training images per dataset')
     p.add_argument('--limit-eval', type=int, default=0, help='debug: use only N images per eval set')
     p.add_argument('--no-clearml', action='store_true')
-    p.add_argument('--project', default='FaceDetection')
+    p.add_argument('--project', default=PROJECT)
     p.add_argument('--queue', default='', help='ClearML queue; empty = run here (still tracked)')
     return p.parse_args()
 
