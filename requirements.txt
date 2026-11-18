@@ -1,0 +1,13 @@
+# torch / torchvision: install the CUDA build for your machine separately.
+numpy
+opencv-python
+pillow
+loguru
+tabulate
+pycocotools
+thop
+tensorboard
+psutil
+tqdm
+clearml
+boto3

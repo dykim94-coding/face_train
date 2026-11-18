@@ -1,0 +1,6 @@
+# Leading slash: only the top-level folders (third_party/YOLOX/yolox/data must stay tracked).
+/data/
+/weights/
+/YOLOX_outputs/
+__pycache__/
+*.pyc
