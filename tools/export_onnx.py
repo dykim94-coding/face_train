@@ -1,0 +1,70 @@
+"""Export a trained YOLOX-s face checkpoint to ONNX (static 1x3x640x640).
+
+    python tools/export_onnx.py --task yolox_s_face_kaggle --out ../weights/yolox_s_face_kaggle.onnx
+    python tools/export_onnx.py --ckpt YOLOX_outputs/x/best_ckpt.pth --out x.onnx
+
+Input : BGR, float32, 0..255 (no normalisation), letterboxed to the top-left with 114 padding.
+Output: (1, 8400, 6) = cx, cy, w, h (pixels of the 640 input), objectness, face score.
+"""
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch import nn
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'third_party' / 'YOLOX'))
+PROJECT = 'FD-FS (Face - object detection, feasibility study)'
+
+
+def main():
+    p = argparse.ArgumentParser()
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument('--ckpt', help='local .pth checkpoint')
+    source.add_argument('--task', help='ClearML task name; its best_ckpt artifact is downloaded')
+    p.add_argument('--project', default=PROJECT)
+    p.add_argument('--out', required=True)
+    p.add_argument('--opset', type=int, default=13)
+    args = p.parse_args()
+
+    ckpt = args.ckpt
+    if args.task:
+        from clearml import Task
+        tasks = Task.get_tasks(project_name=args.project, task_name=f'^{args.task}$',
+                               task_filter={'status': ['completed'], 'order_by': ['-last_update']})
+        if not tasks:
+            raise SystemExit(f'No completed task named {args.task!r} in {args.project!r}')
+        print(f'using task {tasks[0].id} ({tasks[0].name})')
+        ckpt = tasks[0].artifacts['best_ckpt'].get_local_copy()
+
+    from face_exp import build_model
+    from yolox.models.network_blocks import SiLU
+    from yolox.utils import replace_module
+
+    model = build_model()
+    state = torch.load(ckpt, map_location='cpu', weights_only=False)
+    model.load_state_dict(state['model'] if 'model' in state else state)
+    model.eval()
+    model = replace_module(model, nn.SiLU, SiLU)     # export-friendly activation
+    model.head.decode_in_inference = True
+
+    dummy = torch.rand(1, 3, 640, 640) * 255
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    torch.onnx.export(model, dummy, str(out), input_names=['images'], output_names=['output'],
+                      opset_version=args.opset, dynamo=False)
+
+    import onnxruntime as ort
+    session = ort.InferenceSession(str(out), providers=['CPUExecutionProvider'])
+    onnx_out = session.run(None, {'images': dummy.numpy()})[0]
+    with torch.no_grad():
+        torch_out = model(dummy).numpy()
+    print(f'saved {out} ({out.stat().st_size / 1e6:.1f} MB) | output {onnx_out.shape} | '
+          f'max |onnx - torch| = {np.abs(onnx_out - torch_out).max():.5f}')
+
+
+if __name__ == '__main__':
+    main()

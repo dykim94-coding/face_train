@@ -47,6 +47,13 @@ def merge_coco(sources, out_path, limit=None, seed=0):
     return len(images), len(annotations)
 
 
+def build_model():
+    """Bare YOLOX-s face model (same definition training uses), for export/inference."""
+    exp = Exp()
+    exp.num_classes, exp.depth, exp.width = 1, 0.33, 0.50
+    return exp.get_model()
+
+
 class FaceExp(Exp):
     def __init__(self, train_json, val_json, exp_name, output_dir, epochs=50, workers=4):
         super().__init__()
