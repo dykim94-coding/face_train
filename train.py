@@ -1,10 +1,11 @@
-"""Train YOLOX-s face detection on kaggle / soloface / both.
+"""Train YOLOX-s face detection on kaggle / soloface / both / all (= both + AI-Hub DMS subset).
 
 Local:    python train.py --dataset kaggle --data-root data --no-clearml
 Cluster:  python train.py --dataset both --queue slurm          (data comes from ClearML Datasets)
+Continue: python train.py --dataset all --pretrained clearml:<task id> --epochs 20 --lr-scale 0.2 --queue slurm
 
-Whatever it trains on, the best checkpoint is finally scored on the same two fixed
-benchmarks (Kaggle val, SoloFace test) so the three models are directly comparable.
+Whatever it trains on, the best checkpoint is finally scored on the same fixed benchmarks
+(Kaggle val, SoloFace test, DMS val) so all models are directly comparable.
 """
 import argparse
 import json
@@ -18,11 +19,13 @@ DATASETS = {                      # --dataset choice -> names used on disk / in 
     'kaggle': ['kaggle'],
     'soloface': ['soloface'],
     'both': ['kaggle', 'soloface'],
+    'all': ['kaggle', 'soloface', 'ai_hub_dms_sampling'],
 }
 PROJECT = 'FD-FS (Face - object detection, feasibility study)'   # same in tools/upload_dataset.py
-CLEARML_DATASET_NAME ={'kaggle': 'kaggle_face', 'soloface': 'soloface'}
-TRAIN_VAL_SPLIT = {'kaggle': 'val', 'soloface': 'val'}          # used during training
-BENCHMARKS = {'kaggle_val': ('kaggle', 'val'), 'soloface_test': ('soloface', 'test')}
+CLEARML_DATASET_NAME = {'kaggle': 'kaggle_face', 'soloface': 'soloface', 'ai_hub_dms_sampling': 'ai_hub_dms_sampling'}
+TRAIN_VAL_SPLIT = {'kaggle': 'val', 'soloface': 'val', 'ai_hub_dms_sampling': 'val'}   # used during training
+BENCHMARKS = {'kaggle_val': ('kaggle', 'val'), 'soloface_test': ('soloface', 'test'),
+              'dms_val': ('ai_hub_dms_sampling', 'val')}
 COCO_YOLOX_S = 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth'
 DOCKER_IMAGE = 'pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel'
 PACKAGES = ['clearml', 'boto3', 'numpy<2', 'opencv-python-headless', 'loguru', 'tabulate',
@@ -36,11 +39,13 @@ def parse_args():
     p.add_argument('--dataset', choices=list(DATASETS), default='')
     p.add_argument('--data-root', default='', help='local folder holding kaggle/ and soloface/; '
                    'empty = fetch ClearML Datasets')
-    p.add_argument('--epochs', type=int, default=50)
+    p.add_argument('--epochs', type=int, default=50, help='0 = no training, only benchmark --pretrained')
     p.add_argument('--batch-size', type=int, default=32)
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--devices', type=int, default=1, help='number of GPUs')
-    p.add_argument('--pretrained', default='coco', help="'coco', 'none', or a .pth path")
+    p.add_argument('--pretrained', default='coco', help="'coco', 'none', a .pth path, or 'clearml:<task id>' "
+                   "(continue from that task's best_ckpt artifact)")
+    p.add_argument('--lr-scale', type=float, default=1.0, help='multiplies the learning rate (e.g. 0.2 to fine-tune)')
     p.add_argument('--no-fp16', action='store_true')
     p.add_argument('--print-interval', type=int, default=50, help='log every N iterations')
     p.add_argument('--name', default='', help='experiment name (default: yolox_s_face_<dataset>)')
@@ -69,6 +74,9 @@ def resolve_roots(args, names):
 def pretrained_path(args):
     if args.pretrained == 'none':
         return None
+    if args.pretrained.startswith('clearml:'):
+        from clearml import Task
+        return Task.get_task(task_id=args.pretrained.split(':', 1)[1]).artifacts['best_ckpt'].get_local_copy()
     if args.pretrained != 'coco':
         return args.pretrained
     target = ROOT / 'weights' / 'yolox_s.pth'
@@ -131,13 +139,22 @@ def main():
     exp = FaceExp(lists / 'train.json', lists / 'val.json', exp_name=name, output_dir=args.output_dir,
                   epochs=args.epochs, workers=args.workers)
     exp.print_interval = args.print_interval
-    trainer_args = argparse.Namespace(
-        experiment_name=name, batch_size=args.batch_size, fp16=not args.no_fp16, ckpt=pretrained_path(args),
-        resume=False, start_epoch=None, cache=None, occupy=False, logger='tensorboard', exp_file=None)
-    launch(run_training, args.devices, 1, 0, backend='nccl', dist_url='auto', args=(exp, trainer_args))
+    exp.basic_lr_per_img *= args.lr_scale      # YOLOX then multiplies by the batch size
+    start = pretrained_path(args)
+    if start:
+        # Our own checkpoints also hold numpy scalars (best_ap), which newer torch refuses to
+        # unpickle inside YOLOX's loader. Hand it a weights-only copy.
+        weights = torch.load(start, map_location='cpu', weights_only=False)['model']
+        start = str(work / 'start_weights.pth')
+        torch.save({'model': weights}, start)
+    if args.epochs > 0:
+        trainer_args = argparse.Namespace(
+            experiment_name=name, batch_size=args.batch_size, fp16=not args.no_fp16, ckpt=start,
+            resume=False, start_epoch=None, cache=None, occupy=False, logger='tensorboard', exp_file=None)
+        launch(run_training, args.devices, 1, 0, backend='nccl', dist_url='auto', args=(exp, trainer_args))
 
-    # ---- fixed benchmarks on the best checkpoint ----
-    best = work / 'best_ckpt.pth'
+    # ---- fixed benchmarks on the best checkpoint (or on --pretrained itself when --epochs 0) ----
+    best = work / 'best_ckpt.pth' if args.epochs > 0 else Path(start)
     model = exp.get_model()
     model.load_state_dict(torch.load(best, map_location='cpu', weights_only=False)['model'])
     model.cuda().eval()
@@ -154,7 +171,8 @@ def main():
         for bench, values in results.items():
             for metric, value in values.items():
                 task.get_logger().report_single_value(f'{bench}/{metric}', value)
-        task.upload_artifact('best_ckpt', str(best))
+        if args.epochs > 0:
+            task.upload_artifact('best_ckpt', str(best))
         task.upload_artifact('benchmark', str(work / 'benchmark.json'))
 
 
