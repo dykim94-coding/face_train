@@ -20,6 +20,35 @@ sys.path.insert(0, str(ROOT / 'third_party' / 'YOLOX'))
 PROJECT = 'FD-FS (Face - object detection, feasibility study)'
 
 
+def export(ckpt, out, opset=13):
+    """Checkpoint -> ONNX file, checked against the PyTorch output. Returns the largest difference."""
+    from face_exp import build_model
+    from yolox.models.network_blocks import SiLU
+    from yolox.utils import replace_module
+
+    model = build_model()
+    state = torch.load(ckpt, map_location='cpu', weights_only=False)
+    model.load_state_dict(state['model'] if 'model' in state else state)
+    model.eval()
+    model = replace_module(model, nn.SiLU, SiLU)     # export-friendly activation
+    model.head.decode_in_inference = True
+
+    dummy = torch.rand(1, 3, 640, 640) * 255
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    torch.onnx.export(model, dummy, str(out), input_names=['images'], output_names=['output'],
+                      opset_version=opset, dynamo=False)
+
+    import onnxruntime as ort
+    session = ort.InferenceSession(str(out), providers=['CPUExecutionProvider'])
+    onnx_out = session.run(None, {'images': dummy.numpy()})[0]
+    with torch.no_grad():
+        torch_out = model(dummy).numpy()
+    diff = float(np.abs(onnx_out - torch_out).max())
+    print(f'saved {out} ({out.stat().st_size / 1e6:.1f} MB) | output {onnx_out.shape} | max |onnx - torch| = {diff:.5f}')
+    return diff
+
+
 def main():
     p = argparse.ArgumentParser()
     source = p.add_mutually_exclusive_group(required=True)
@@ -40,30 +69,7 @@ def main():
         print(f'using task {tasks[0].id} ({tasks[0].name})')
         ckpt = tasks[0].artifacts['best_ckpt'].get_local_copy()
 
-    from face_exp import build_model
-    from yolox.models.network_blocks import SiLU
-    from yolox.utils import replace_module
-
-    model = build_model()
-    state = torch.load(ckpt, map_location='cpu', weights_only=False)
-    model.load_state_dict(state['model'] if 'model' in state else state)
-    model.eval()
-    model = replace_module(model, nn.SiLU, SiLU)     # export-friendly activation
-    model.head.decode_in_inference = True
-
-    dummy = torch.rand(1, 3, 640, 640) * 255
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    torch.onnx.export(model, dummy, str(out), input_names=['images'], output_names=['output'],
-                      opset_version=args.opset, dynamo=False)
-
-    import onnxruntime as ort
-    session = ort.InferenceSession(str(out), providers=['CPUExecutionProvider'])
-    onnx_out = session.run(None, {'images': dummy.numpy()})[0]
-    with torch.no_grad():
-        torch_out = model(dummy).numpy()
-    print(f'saved {out} ({out.stat().st_size / 1e6:.1f} MB) | output {onnx_out.shape} | '
-          f'max |onnx - torch| = {np.abs(onnx_out - torch_out).max():.5f}')
+    export(ckpt, args.out, args.opset)
 
 
 if __name__ == '__main__':
