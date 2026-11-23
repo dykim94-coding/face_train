@@ -81,8 +81,13 @@ def main():
     p.add_argument('--src', default='Y:/')
     p.add_argument('--out', required=True)
     p.add_argument('--splits', nargs='+', default=['Training=train', 'Validation=val'])
+    p.add_argument('--name', default='ai_hub_dms_sampling', help='dataset folder name under --out')
+    p.add_argument('--base', type=int, default=BASE, help='frames kept from a clip with a single state')
+    p.add_argument('--cap', type=int, default=CAP, help='most frames kept from an ordinary clip (one per distinct state)')
+    p.add_argument('--rare', type=int, default=CAP, help='frames kept from a clip that shows a phone or cigar')
+    p.add_argument('--dry', action='store_true', help='count only, copy nothing')
     args = p.parse_args()
-    src, out = Path(args.src), Path(args.out) / 'ai_hub_dms_sampling'
+    src, out = Path(args.src), Path(args.out) / args.name
     report, seen = {}, {}
     for item in args.splits:
         source, split = item.split('=')
@@ -106,13 +111,22 @@ def main():
             groups = collections.defaultdict(list)
             for r in frames:
                 groups[sig(r)].append(r)
-            want = CAP if any(r['phone'] or r['cigar'] for r in frames) else BASE
-            chosen = [g[len(g) // 2] for _, g in sorted(groups.items(), key=lambda kv: freq[kv[0]])[:CAP]]  # rarest first
+            special = any(r['phone'] or r['cigar'] for r in frames)
+            want = args.rare if special else args.base
+            limit = max(args.rare, args.cap) if special else args.cap
+            chosen = [g[len(g) // 2] for _, g in sorted(groups.items(), key=lambda kv: freq[kv[0]])[:limit]]  # rarest first
             if len(chosen) < want:
                 rest = [r for r in frames if r not in chosen]
                 chosen += [r for r in spread(rest + chosen[:1], want - len(chosen) + 1) if r not in chosen][:want - len(chosen)]
             picked += chosen
         picked.sort(key=lambda r: r['name'])
+        if args.dry:
+            print(split, 'would pick', len(picked), 'from', len(clips), 'clips', dict(sorted(collections.Counter(
+                collections.Counter((r['folder'], r['name'].replace(' ', '_').rsplit('_', 1)[0]) for r in picked).values()).items())),
+                {k: sum(1 for r in picked if t(r)) for k, t in (('phone', lambda r: r['phone']), ('cigar', lambda r: r['cigar']),
+                 ('eyes_closed', lambda r: r['eyes'] == 'closed'), ('mouth_open', lambda r: r['mouth'] == 'open'),
+                 ('mask', lambda r: r['mask']), ('glasses', lambda r: r['glasses']), ('cap', lambda r: r['cap']))}, flush=True)
+            continue
 
         image_dir = out / 'images' / split
         image_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +202,8 @@ def main():
                                  ('phone', lambda r: r['phone']), ('cigar', lambda r: r['cigar']),
                                  ('eyes_closed', lambda r: r['eyes'] == 'closed'), ('mouth_open', lambda r: r['mouth'] == 'open'))}}
         print(json.dumps(report[split], indent=1), flush=True)
-    (out / 'build_report.json').write_text(json.dumps(report, indent=1))
+    if not args.dry:
+        (out / 'build_report.json').write_text(json.dumps(report, indent=1))
 
 
 if __name__ == '__main__':

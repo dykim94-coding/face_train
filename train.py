@@ -1,4 +1,5 @@
-"""Train YOLOX-s face detection on kaggle / soloface / both / all (= both + AI-Hub DMS subset).
+"""Train YOLOX-s face detection on kaggle / soloface / both / all (= both + AI-Hub DMS subset) /
+all_small (= both + the one-frame-per-clip DMS subset).
 
 Local:    python train.py --dataset kaggle --data-root data --no-clearml
 Cluster:  python train.py --dataset both --queue slurm          (data comes from ClearML Datasets)
@@ -20,10 +21,13 @@ DATASETS = {                      # --dataset choice -> names used on disk / in 
     'soloface': ['soloface'],
     'both': ['kaggle', 'soloface'],
     'all': ['kaggle', 'soloface', 'ai_hub_dms_sampling'],
+    'all_small': ['kaggle', 'soloface', 'ai_hub_dms_sampling_small'],
 }
 PROJECT = 'FD-FS (Face - object detection, feasibility study)'   # same in tools/upload_dataset.py
-CLEARML_DATASET_NAME = {'kaggle': 'kaggle_face', 'soloface': 'soloface', 'ai_hub_dms_sampling': 'ai_hub_dms_sampling'}
-TRAIN_VAL_SPLIT = {'kaggle': 'val', 'soloface': 'val', 'ai_hub_dms_sampling': 'val'}   # used during training
+CLEARML_DATASET_NAME = {'kaggle': 'kaggle_face', 'soloface': 'soloface', 'ai_hub_dms_sampling': 'ai_hub_dms_sampling',
+                        'ai_hub_dms_sampling_small': 'ai_hub_dms_sampling_small'}
+TRAIN_VAL_SPLIT = {'kaggle': 'val', 'soloface': 'val', 'ai_hub_dms_sampling': 'val',
+                   'ai_hub_dms_sampling_small': 'val'}   # used during training (both DMS subsets share one val split)
 BENCHMARKS = {'kaggle_val': ('kaggle', 'val'), 'soloface_test': ('soloface', 'test'),
               'dms_val': ('ai_hub_dms_sampling', 'val')}
 COCO_YOLOX_S = 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth'
@@ -46,6 +50,8 @@ def parse_args():
     p.add_argument('--pretrained', default='coco', help="'coco', 'none', a .pth path, or 'clearml:<task id>' "
                    "(continue from that task's best_ckpt artifact)")
     p.add_argument('--lr-scale', type=float, default=1.0, help='multiplies the learning rate (e.g. 0.2 to fine-tune)')
+    p.add_argument('--save-every', type=int, default=0, help='also keep and upload the checkpoint of every Nth epoch '
+                   '(a multiple of 5: that is how often the model is evaluated and saved)')
     p.add_argument('--no-fp16', action='store_true')
     p.add_argument('--print-interval', type=int, default=50, help='log every N iterations')
     p.add_argument('--name', default='', help='experiment name (default: yolox_s_face_<dataset>)')
@@ -139,6 +145,7 @@ def main():
     exp = FaceExp(lists / 'train.json', lists / 'val.json', exp_name=name, output_dir=args.output_dir,
                   epochs=args.epochs, workers=args.workers)
     exp.print_interval = args.print_interval
+    exp.save_history_ckpt = args.save_every > 0
     exp.basic_lr_per_img *= args.lr_scale      # YOLOX then multiplies by the batch size
     start = pretrained_path(args)
     if start:
@@ -173,6 +180,10 @@ def main():
                 task.get_logger().report_single_value(f'{bench}/{metric}', value)
         if args.epochs > 0:
             task.upload_artifact('best_ckpt', str(best))
+            for epoch in range(args.save_every, args.epochs + 1, args.save_every) if args.save_every > 0 else []:
+                history = work / f'epoch_{epoch}_ckpt.pth'
+                if history.exists():
+                    task.upload_artifact(f'epoch_{epoch:02d}_ckpt', str(history))
         task.upload_artifact('benchmark', str(work / 'benchmark.json'))
 
 
