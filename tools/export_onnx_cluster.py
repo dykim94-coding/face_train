@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / 'third_party' / 'YOLOX'))
 PROJECT = 'FD-FS (Face - object detection, feasibility study)'
 DOCKER_IMAGE = 'pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel'
 PACKAGES = ['clearml', 'boto3', 'numpy<2', 'opencv-python-headless', 'loguru', 'tabulate', 'pycocotools', 'thop',
-            'tensorboard', 'psutil', 'tqdm', 'onnx', 'onnxruntime']
+            'tensorboard', 'psutil', 'tqdm', 'onnx==1.16.2', 'onnxruntime==1.19.2']   # newer onnx needs numpy 2
 
 
 def main():
