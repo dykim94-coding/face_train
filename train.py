@@ -1,5 +1,6 @@
 """Train YOLOX-s face detection on kaggle / soloface / both / all (= both + AI-Hub DMS subset) /
-all_small (= both + the one-frame-per-clip DMS subset).
+all_small (= both + the one-frame-per-clip DMS subset) / all_small_noface (= all_small + our own IR frames
+without a face: hands and objects close to the camera).
 
 Local:    python train.py --dataset kaggle --data-root data --no-clearml
 Cluster:  python train.py --dataset both --queue slurm          (data comes from ClearML Datasets)
@@ -22,12 +23,14 @@ DATASETS = {                      # --dataset choice -> names used on disk / in 
     'both': ['kaggle', 'soloface'],
     'all': ['kaggle', 'soloface', 'ai_hub_dms_sampling'],
     'all_small': ['kaggle', 'soloface', 'ai_hub_dms_sampling_small'],
+    'all_small_noface': ['kaggle', 'soloface', 'ai_hub_dms_sampling_small', 'ir_no_face'],
 }
 PROJECT = 'FD-FS (Face - object detection, feasibility study)'   # same in tools/upload_dataset.py
 CLEARML_DATASET_NAME = {'kaggle': 'kaggle_face', 'soloface': 'soloface', 'ai_hub_dms_sampling': 'ai_hub_dms_sampling',
-                        'ai_hub_dms_sampling_small': 'ai_hub_dms_sampling_small'}
+                        'ai_hub_dms_sampling_small': 'ai_hub_dms_sampling_small', 'ir_no_face': 'ir_no_face'}
 TRAIN_VAL_SPLIT = {'kaggle': 'val', 'soloface': 'val', 'ai_hub_dms_sampling': 'val',
                    'ai_hub_dms_sampling_small': 'val'}   # used during training (both DMS subsets share one val split)
+TRAIN_REPEAT = {'ir_no_face': 10}   # tiny sets are listed this many times per epoch (ir_no_face: 253 images, train split only)
 BENCHMARKS = {'kaggle_val': ('kaggle', 'val'), 'soloface_test': ('soloface', 'test'),
               'dms_val': ('ai_hub_dms_sampling', 'val')}
 COCO_YOLOX_S = 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth'
@@ -136,9 +139,9 @@ def main():
     roots = resolve_roots(args, sorted(set(train_names) | {d for d, _ in BENCHMARKS.values()}))
     work = Path(args.output_dir) / name
     lists = work / 'lists'
-    n_train = merge_coco([(roots[n], 'train') for n in train_names], lists / 'train.json',
+    n_train = merge_coco([(roots[n], 'train') for n in train_names for _ in range(TRAIN_REPEAT.get(n, 1))], lists / 'train.json',
                          limit=args.limit_train)
-    n_val = merge_coco([(roots[n], TRAIN_VAL_SPLIT[n]) for n in train_names], lists / 'val.json',
+    n_val = merge_coco([(roots[n], TRAIN_VAL_SPLIT[n]) for n in train_names if n in TRAIN_VAL_SPLIT], lists / 'val.json',
                        limit=args.limit_eval)
     print(f'train: {n_train[0]} images / {n_train[1]} boxes | val: {n_val[0]} images / {n_val[1]} boxes')
 
