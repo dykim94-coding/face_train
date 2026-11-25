@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / 'third_party' / 'YOLOX'))
 PROJECT = 'FD-FS (Face - object detection, feasibility study)'
 
 
-def export(ckpt, out, opset=13):
+def export(ckpt, out, opset=13, size=640):
     """Checkpoint -> ONNX file, checked against the PyTorch output. Returns the largest difference."""
     from face_exp import build_model
     from yolox.models.network_blocks import SiLU
@@ -33,7 +33,7 @@ def export(ckpt, out, opset=13):
     model = replace_module(model, nn.SiLU, SiLU)     # export-friendly activation
     model.head.decode_in_inference = True
 
-    dummy = torch.rand(1, 3, 640, 640) * 255
+    dummy = torch.rand(1, 3, size, size) * 255
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(model, dummy, str(out), input_names=['images'], output_names=['output'],
@@ -57,6 +57,7 @@ def main():
     p.add_argument('--project', default=PROJECT)
     p.add_argument('--out', required=True)
     p.add_argument('--opset', type=int, default=13)
+    p.add_argument('--size', type=int, default=640, help='square input size of the exported model')
     args = p.parse_args()
 
     ckpt = args.ckpt
@@ -69,7 +70,7 @@ def main():
         print(f'using task {tasks[0].id} ({tasks[0].name})')
         ckpt = tasks[0].artifacts['best_ckpt'].get_local_copy()
 
-    export(ckpt, args.out, args.opset)
+    export(ckpt, args.out, args.opset, args.size)
 
 
 if __name__ == '__main__':

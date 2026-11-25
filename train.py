@@ -55,6 +55,7 @@ def parse_args():
     p.add_argument('--lr-scale', type=float, default=1.0, help='multiplies the learning rate (e.g. 0.2 to fine-tune)')
     p.add_argument('--save-every', type=int, default=0, help='also keep and upload the checkpoint of every Nth epoch '
                    '(a multiple of 5: that is how often the model is evaluated and saved)')
+    p.add_argument('--input-size', type=int, default=640, help='square training / test size (multi-scale training spans about +-25%)')
     p.add_argument('--no-fp16', action='store_true')
     p.add_argument('--print-interval', type=int, default=50, help='log every N iterations')
     p.add_argument('--name', default='', help='experiment name (default: yolox_s_face_<dataset>)')
@@ -148,6 +149,8 @@ def main():
     exp = FaceExp(lists / 'train.json', lists / 'val.json', exp_name=name, output_dir=args.output_dir,
                   epochs=args.epochs, workers=args.workers)
     exp.print_interval = args.print_interval
+    exp.input_size = exp.test_size = (args.input_size, args.input_size)
+    exp.multiscale_range = max(1, round(args.input_size / 32 / 4))     # 640 -> 5 (480..800, the YOLOX default), 256 -> 2 (192..320)
     exp.save_history_ckpt = args.save_every > 0
     exp.basic_lr_per_img *= args.lr_scale      # YOLOX then multiplies by the batch size
     start = pretrained_path(args)
