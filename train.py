@@ -24,15 +24,17 @@ DATASETS = {                      # --dataset choice -> names used on disk / in 
     'all': ['kaggle', 'soloface', 'ai_hub_dms_sampling'],
     'all_small': ['kaggle', 'soloface', 'ai_hub_dms_sampling_small'],
     'all_small_noface': ['kaggle', 'soloface', 'ai_hub_dms_sampling_small', 'ir_no_face'],
+    'open_images_fhh': ['open_images_fhh'],     # Open Images subset with face, hand and head boxes (see --classes)
 }
 PROJECT = 'FD-FS (Face - object detection, feasibility study)'   # same in tools/upload_dataset.py
 CLEARML_DATASET_NAME = {'kaggle': 'kaggle_face', 'soloface': 'soloface', 'ai_hub_dms_sampling': 'ai_hub_dms_sampling',
-                        'ai_hub_dms_sampling_small': 'ai_hub_dms_sampling_small', 'ir_no_face': 'ir_no_face'}
+                        'ai_hub_dms_sampling_small': 'ai_hub_dms_sampling_small', 'ir_no_face': 'ir_no_face', 'open_images_fhh': 'open_images_fhh'}
 TRAIN_VAL_SPLIT = {'kaggle': 'val', 'soloface': 'val', 'ai_hub_dms_sampling': 'val',
-                   'ai_hub_dms_sampling_small': 'val'}   # used during training (both DMS subsets share one val split)
+                   'ai_hub_dms_sampling_small': 'val', 'open_images_fhh': 'val'}   # used during training (both DMS subsets share one val split)
 TRAIN_REPEAT = {'ir_no_face': 10}   # tiny sets are listed this many times per epoch (ir_no_face: 253 images, train split only)
 BENCHMARKS = {'kaggle_val': ('kaggle', 'val'), 'soloface_test': ('soloface', 'test'),
               'dms_val': ('ai_hub_dms_sampling', 'val')}
+OWN_BENCHMARK = {'open_images_fhh': ('oi_test', 'open_images_fhh', 'test')}    # extra benchmark, also scored per class
 COCO_YOLOX = 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_{}.pth'
 DOCKER_IMAGE = 'pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel'
 PACKAGES = ['clearml', 'boto3', 'numpy<2', 'opencv-python-headless', 'loguru', 'tabulate',
@@ -56,6 +58,8 @@ def parse_args():
     p.add_argument('--save-every', type=int, default=0, help='also keep and upload the checkpoint of every Nth epoch '
                    '(a multiple of 5: that is how often the model is evaluated and saved)')
     p.add_argument('--model', choices=['s', 'tiny', 'nano'], default='s', help='YOLOX size')
+    p.add_argument('--classes', nargs='+', default=['face'], choices=['face', 'hand', 'head'],
+                   help='classes of the model; boxes of other classes in the data are ignored')
     p.add_argument('--input-size', type=int, default=640, help='square training / test size (multi-scale training spans about +-25%)')
     p.add_argument('--no-fp16', action='store_true')
     p.add_argument('--print-interval', type=int, default=50, help='log every N iterations')
@@ -128,6 +132,9 @@ def main():
         task.set_packages(PACKAGES)
         if args.queue:
             task.execute_remotely(queue_name=args.queue)   # local process ends here
+    if isinstance(args.classes, str):            # a list can come back from the ClearML server as its text form
+        import ast
+        args.classes = list(ast.literal_eval(args.classes)) if args.classes.strip().startswith('[') else args.classes.split()
     if args.dataset not in DATASETS:
         raise SystemExit(f'--dataset must be one of {list(DATASETS)} (got {args.dataset!r})')
     name = args.name or f'yolox_s_face_{args.dataset}'
@@ -138,17 +145,18 @@ def main():
     from face_exp import FaceExp, merge_coco
 
     train_names = DATASETS[args.dataset]
-    roots = resolve_roots(args, sorted(set(train_names) | {d for d, _ in BENCHMARKS.values()}))
+    roots = resolve_roots(args, sorted(set(train_names) | ({d for d, _ in BENCHMARKS.values()} if 'face' in args.classes else set())))
     work = Path(args.output_dir) / name
     lists = work / 'lists'
+    classes = list(args.classes)
     n_train = merge_coco([(roots[n], 'train') for n in train_names for _ in range(TRAIN_REPEAT.get(n, 1))], lists / 'train.json',
-                         limit=args.limit_train)
+                         limit=args.limit_train, classes=classes)
     n_val = merge_coco([(roots[n], TRAIN_VAL_SPLIT[n]) for n in train_names if n in TRAIN_VAL_SPLIT], lists / 'val.json',
-                       limit=args.limit_eval)
+                       limit=args.limit_eval, classes=classes)
     print(f'train: {n_train[0]} images / {n_train[1]} boxes | val: {n_val[0]} images / {n_val[1]} boxes')
 
     exp = FaceExp(lists / 'train.json', lists / 'val.json', exp_name=name, output_dir=args.output_dir,
-                  epochs=args.epochs, workers=args.workers, size=args.model)
+                  epochs=args.epochs, workers=args.workers, size=args.model, num_classes=len(classes))
     exp.print_interval = args.print_interval
     exp.input_size = exp.test_size = (args.input_size, args.input_size)
     exp.multiscale_range = max(1, round(args.input_size / 32 / 4))     # 640 -> 5 (480..800, the YOLOX default), 256 -> 2 (192..320)
@@ -159,6 +167,11 @@ def main():
         # Our own checkpoints also hold numpy scalars (best_ap), which newer torch refuses to
         # unpickle inside YOLOX's loader. Hand it a weights-only copy.
         weights = torch.load(start, map_location='cpu', weights_only=False)['model']
+        shapes = {k: v.shape for k, v in exp.get_model().state_dict().items()}
+        dropped = [k for k, v in weights.items() if k in shapes and v.shape != shapes[k]]
+        if dropped:                            # class layers of a model with another number of classes start fresh
+            print(f'pretrained layers with a different shape are not loaded: {dropped}')
+            weights = {k: v for k, v in weights.items() if k not in dropped}
         start = str(work / 'start_weights.pth')
         torch.save({'model': weights}, start)
     if args.epochs > 0:
@@ -173,8 +186,19 @@ def main():
     model.load_state_dict(torch.load(best, map_location='cpu', weights_only=False)['model'])
     model.cuda().eval()
     results = {}
-    for bench, (dataset, split) in BENCHMARKS.items():
-        merge_coco([(roots[dataset], split)], lists / f'{bench}.json', limit=args.limit_eval)
+    benchmarks = {b: (d, s, ['face']) for b, (d, s) in BENCHMARKS.items() if 'face' in classes}   # face-only data: only the face class is scored
+    if args.dataset in OWN_BENCHMARK:
+        own, dataset, split = OWN_BENCHMARK[args.dataset]
+        benchmarks[own] = (dataset, split, classes)                                                  # mean over the model's classes
+        benchmarks.update({f'{own}_{c}': (dataset, split, [c]) for c in classes if len(classes) > 1})
+    for bench, (dataset, split, scored) in benchmarks.items():
+        # The json always lists every class of the model (so a prediction of any class maps to a category) but
+        # holds only the boxes of the scored classes: classes without boxes do not enter the mean.
+        merge_coco([(roots[dataset], split)], lists / f'{bench}.json', limit=args.limit_eval, classes=classes)
+        data = json.loads((lists / f'{bench}.json').read_text())
+        keep = {classes.index(c) + 1 for c in scored}
+        data['annotations'] = [a for a in data['annotations'] if a['category_id'] in keep]
+        (lists / f'{bench}.json').write_text(json.dumps(data))
         ap, ap50, summary = exp.make_evaluator(lists / f'{bench}.json', args.batch_size).evaluate(
             model, False, half=not args.no_fp16)
         results[bench] = {'AP50_95': float(ap), 'AP50': float(ap50)}

@@ -22,9 +22,17 @@ from yolox.exp import Exp
 yolox.layers.COCOeval_opt = COCOeval
 
 
-def merge_coco(sources, out_path, limit=None, seed=0):
-    """sources: [(dataset_root, split), ...] -> writes one merged COCO json."""
+CLASS_ID = {'face': 1, 'hand': 2, 'head': 3}      # category ids shared by every dataset (single-class sets only hold face)
+
+
+def merge_coco(sources, out_path, limit=None, seed=0, classes=None):
+    """sources: [(dataset_root, split), ...] -> writes one merged COCO json.
+
+    classes (e.g. ['face', 'hand']): the model's classes. Boxes of other classes are dropped and the json lists exactly
+    these categories, renumbered 1..N in this order, also when a source holds only some of them.
+    """
     images, annotations, categories = [], [], None
+    remap = {CLASS_ID[c]: i + 1 for i, c in enumerate(classes)} if classes else None
     for root, split in sources:
         root = Path(root)
         data = json.loads((root / 'annotations' / f'{split}.json').read_text())
@@ -38,9 +46,11 @@ def merge_coco(sources, out_path, limit=None, seed=0):
             images.append({**image, 'id': len(images) + 1,
                            'file_name': str((root / 'images' / split / image['file_name']).resolve())})
         for annotation in data['annotations']:
-            if annotation['image_id'] in new_id:
-                annotations.append({**annotation, 'id': len(annotations) + 1,
-                                    'image_id': new_id[annotation['image_id']]})
+            if annotation['image_id'] in new_id and (remap is None or annotation['category_id'] in remap):
+                annotations.append({**annotation, 'id': len(annotations) + 1, 'image_id': new_id[annotation['image_id']],
+                                    'category_id': remap[annotation['category_id']] if remap else annotation['category_id']})
+    if classes:
+        categories = [{'id': i + 1, 'name': c, 'supercategory': 'person'} for i, c in enumerate(classes)]
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({'images': images, 'annotations': annotations, 'categories': categories}))
@@ -67,18 +77,18 @@ def make_model(exp, depthwise):
     return exp.model
 
 
-def build_model(size='s'):
-    """Bare YOLOX face model (same definition training uses), for export/inference."""
+def build_model(size='s', num_classes=1):
+    """Bare YOLOX model (same definition training uses), for export/inference."""
     exp = Exp()
-    exp.num_classes = 1
+    exp.num_classes = num_classes
     exp.depth, exp.width, depthwise = MODEL_SIZES[size]
     return make_model(exp, depthwise)
 
 
 class FaceExp(Exp):
-    def __init__(self, train_json, val_json, exp_name, output_dir, epochs=50, workers=4, size='s'):
+    def __init__(self, train_json, val_json, exp_name, output_dir, epochs=50, workers=4, size='s', num_classes=1):
         super().__init__()
-        self.num_classes = 1
+        self.num_classes = num_classes
         self.depth, self.width, self.depthwise = MODEL_SIZES[size]
         if size != 's':                      # the lighter augmentation of the official tiny / nano recipes
             self.mosaic_scale = (0.5, 1.5)
