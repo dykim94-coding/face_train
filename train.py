@@ -33,7 +33,7 @@ TRAIN_VAL_SPLIT = {'kaggle': 'val', 'soloface': 'val', 'ai_hub_dms_sampling': 'v
 TRAIN_REPEAT = {'ir_no_face': 10}   # tiny sets are listed this many times per epoch (ir_no_face: 253 images, train split only)
 BENCHMARKS = {'kaggle_val': ('kaggle', 'val'), 'soloface_test': ('soloface', 'test'),
               'dms_val': ('ai_hub_dms_sampling', 'val')}
-COCO_YOLOX_S = 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.pth'
+COCO_YOLOX = 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_{}.pth'
 DOCKER_IMAGE = 'pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel'
 PACKAGES = ['clearml', 'boto3', 'numpy<2', 'opencv-python-headless', 'loguru', 'tabulate',
             'pycocotools', 'thop', 'tensorboard', 'psutil', 'tqdm']   # torch comes with the image
@@ -55,6 +55,7 @@ def parse_args():
     p.add_argument('--lr-scale', type=float, default=1.0, help='multiplies the learning rate (e.g. 0.2 to fine-tune)')
     p.add_argument('--save-every', type=int, default=0, help='also keep and upload the checkpoint of every Nth epoch '
                    '(a multiple of 5: that is how often the model is evaluated and saved)')
+    p.add_argument('--model', choices=['s', 'tiny', 'nano'], default='s', help='YOLOX size')
     p.add_argument('--input-size', type=int, default=640, help='square training / test size (multi-scale training spans about +-25%)')
     p.add_argument('--no-fp16', action='store_true')
     p.add_argument('--print-interval', type=int, default=50, help='log every N iterations')
@@ -89,12 +90,12 @@ def pretrained_path(args):
         return Task.get_task(task_id=args.pretrained.split(':', 1)[1]).artifacts['best_ckpt'].get_local_copy()
     if args.pretrained != 'coco':
         return args.pretrained
-    target = ROOT / 'weights' / 'yolox_s.pth'
+    target = ROOT / 'weights' / f'yolox_{args.model}.pth'
     if not target.exists():
         import torch
         target.parent.mkdir(exist_ok=True)
         try:
-            torch.hub.download_url_to_file(COCO_YOLOX_S, str(target))
+            torch.hub.download_url_to_file(COCO_YOLOX.format(args.model), str(target))
         except Exception as exc:
             raise SystemExit(f'Could not download COCO weights ({exc}). '
                              'Pass --pretrained <file.pth> or --pretrained none.')
@@ -147,7 +148,7 @@ def main():
     print(f'train: {n_train[0]} images / {n_train[1]} boxes | val: {n_val[0]} images / {n_val[1]} boxes')
 
     exp = FaceExp(lists / 'train.json', lists / 'val.json', exp_name=name, output_dir=args.output_dir,
-                  epochs=args.epochs, workers=args.workers)
+                  epochs=args.epochs, workers=args.workers, size=args.model)
     exp.print_interval = args.print_interval
     exp.input_size = exp.test_size = (args.input_size, args.input_size)
     exp.multiscale_range = max(1, round(args.input_size / 32 / 4))     # 640 -> 5 (480..800, the YOLOX default), 256 -> 2 (192..320)

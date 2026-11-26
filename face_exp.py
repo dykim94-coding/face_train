@@ -47,20 +47,44 @@ def merge_coco(sources, out_path, limit=None, seed=0):
     return len(images), len(annotations)
 
 
-def build_model():
-    """Bare YOLOX-s face model (same definition training uses), for export/inference."""
+# name -> depth, width, depthwise convolutions (the official YOLOX-s / -tiny / -nano definitions)
+MODEL_SIZES = {'s': (0.33, 0.50, False), 'tiny': (0.33, 0.375, False), 'nano': (0.33, 0.25, True)}
+
+
+def make_model(exp, depthwise):
+    """Exp.get_model() with the depthwise switch YOLOX-nano needs (its own exp file does the same)."""
+    from torch import nn
+    from yolox.models import YOLOX, YOLOPAFPN, YOLOXHead
+    if getattr(exp, 'model', None) is None:
+        channels = [256, 512, 1024]
+        exp.model = YOLOX(YOLOPAFPN(exp.depth, exp.width, in_channels=channels, act=exp.act, depthwise=depthwise),
+                          YOLOXHead(exp.num_classes, exp.width, in_channels=channels, act=exp.act, depthwise=depthwise))
+    for m in exp.model.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.eps, m.momentum = 1e-3, 0.03
+    exp.model.head.initialize_biases(1e-2)
+    exp.model.train()
+    return exp.model
+
+
+def build_model(size='s'):
+    """Bare YOLOX face model (same definition training uses), for export/inference."""
     exp = Exp()
-    exp.num_classes, exp.depth, exp.width = 1, 0.33, 0.50
-    return exp.get_model()
+    exp.num_classes = 1
+    exp.depth, exp.width, depthwise = MODEL_SIZES[size]
+    return make_model(exp, depthwise)
 
 
 class FaceExp(Exp):
-    def __init__(self, train_json, val_json, exp_name, output_dir, epochs=50, workers=4):
+    def __init__(self, train_json, val_json, exp_name, output_dir, epochs=50, workers=4, size='s'):
         super().__init__()
-        # YOLOX-s
         self.num_classes = 1
-        self.depth = 0.33
-        self.width = 0.50
+        self.depth, self.width, self.depthwise = MODEL_SIZES[size]
+        if size != 's':                      # the lighter augmentation of the official tiny / nano recipes
+            self.mosaic_scale = (0.5, 1.5)
+            self.enable_mixup = False
+        if size == 'nano':
+            self.mosaic_prob = 0.5
         self.exp_name = exp_name
         self.output_dir = str(output_dir)
         self.train_json = str(Path(train_json).resolve())
@@ -73,6 +97,9 @@ class FaceExp(Exp):
         self.print_interval = 50
         self.save_history_ckpt = False   # keep latest + best only
         self.seed = 0
+
+    def get_model(self):
+        return make_model(self, self.depthwise)
 
     def _dataset(self, json_file, preproc, img_size):
         from yolox.data import COCODataset
